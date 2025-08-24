@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visor de Fractales Optimizado con IA</title>
+    <style>
+        /* Estilos generales */
+        body, html {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0a0a0a;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            color: white;
+        }
+        #fractalCanvas {
+            display: block;
+            cursor: crosshair;
+            transition: filter 0.5s ease;
+        }
+        #fractalCanvas.rendering {
+            filter: blur(2px) brightness(0.8);
+        }
+
+        /* Contenedor para los controles */
+        #controls {
+            position: absolute;
+            bottom: 15px;
+            left: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        /* Estilos para el texto de ayuda y botones */
+        .info-box, .gemini-btn {
+            padding: 12px 15px;
+            background-color: rgba(0, 0, 0, 0.75);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            font-size: 14px;
+            text-shadow: 1px 1px 2px black;
+            transition: background-color 0.3s, transform 0.2s;
+        }
+        .info-box p { margin: 0 0 5px 0; }
+        .info-box p:last-child { margin-bottom: 0; }
+
+        /* Estilos específicos para los botones de Gemini */
+        .gemini-btn {
+            cursor: pointer;
+            border-color: rgba(124, 77, 255, 0.6);
+            color: #e0e0e0;
+        }
+        .gemini-btn:hover { background-color: rgba(40, 40, 40, 0.9); transform: translateY(-2px); }
+        .gemini-btn:active { transform: translateY(0px); }
+
+        /* Estilos para el Modal de la IA */
+        #gemini-modal {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%) scale(0.95);
+            width: 90%; max-width: 500px;
+            background-color: #1e1e1e;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            padding: 25px; z-index: 1000;
+            opacity: 0; visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease, transform 0.3s ease;
+        }
+        #gemini-modal.visible { opacity: 1; visibility: visible; transform: translate(-50%, -50%) scale(1); }
+        #gemini-modal h2 { margin-top: 0; color: #d1c4e9; font-size: 1.2em; }
+        #gemini-content { min-height: 50px; max-height: 40vh; overflow-y: auto; margin-bottom: 20px; line-height: 1.6; }
+        #close-modal-btn { display: block; width: 100%; padding: 12px; border: none; background-color: #673ab7; color: white; border-radius: 8px; cursor: pointer; font-size: 1em; transition: background-color 0.3s; }
+        #close-modal-btn:hover { background-color: #512da8; }
+        
+        /* Estilos para las sugerencias de lugares */
+        .location-suggestion { padding: 10px; margin-bottom: 10px; border: 1px solid #444; border-radius: 8px; cursor: pointer; transition: background-color 0.3s, border-color 0.3s; }
+        .location-suggestion:hover { background-color: #333; border-color: #673ab7; }
+        .location-suggestion h3 { margin: 0 0 5px 0; color: #d1c4e9; }
+        .location-suggestion p { margin: 0; font-size: 0.9em; color: #b0b0b0; }
+
+        /* Indicador de carga */
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #673ab7; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Indicador de renderizado en el centro */
+        #render-indicator {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            background-color: rgba(0,0,0,0.7);
+            padding: 10px 20px;
+            border-radius: 8px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+            z-index: 500;
+        }
+        #render-indicator.visible { opacity: 1; }
+    </style>
+</head>
+<body>
+
+    <canvas id="fractalCanvas"></canvas>
+    <div id="render-indicator">Calculando...</div>
+    
+    <div id="controls">
+        <div class="info-box">
+            <p><strong>Explorador de Mandelbrot</strong></p>
+            <p>Usa la rueda del mouse para el zoom.</p>
+        </div>
+        <button class="gemini-btn" id="suggest-location-btn">✨ Llévame a un lugar interesante</button>
+        <button class="gemini-btn" id="describe-view-btn">✨ Describir esta vista</button>
+    </div>
+
+    <div id="gemini-modal">
+        <h2 id="gemini-title">Sugerencia de la IA</h2>
+        <div id="gemini-content"></div>
+        <button id="close-modal-btn">Cerrar</button>
+    </div>
+
+    <!-- El código del Web Worker se define aquí para mantenerlo en un solo archivo -->
+    <script id="fractal-worker" type="javascript/worker">
+        // --- CÓDIGO DEL WEB WORKER ---
+        // Este código se ejecuta en un hilo separado.
+
+        function getColor(iteration, max) {
+            if (iteration === max) return { r: 0, g: 0, b: 0 };
+            const t = iteration / max;
+            const r = Math.round(255 * (0.5 * (1 + Math.cos(3.0 + t * 15.0 + 0.2))));
+            const g = Math.round(255 * (0.5 * (1 + Math.cos(2.5 + t * 12.0 + 0.5))));
+            const b = Math.round(255 * (0.5 * (1 + Math.cos(2.0 + t * 18.0 + 0.9))));
+            return { r, g, b };
+        }
+
+        self.onmessage = (e) => {
+            const { view, maxIterations } = e.data;
+            const { width, height, centerX, centerY, zoom } = view;
+
+            const offscreenCanvas = new OffscreenCanvas(width, height);
+            const ctx = offscreenCanvas.getContext('2d');
+            const imageData = ctx.createImageData(width, height);
+            const data = imageData.data;
+            
+            const scale = 2.5 / (zoom * Math.min(width, height));
+
+            for (let px = 0; px < width; px++) {
+                for (let py = 0; py < height; py++) {
+                    const cx = centerX + (px - width / 2) * scale;
+                    const cy = centerY + (py - height / 2) * scale;
+                    let x = 0.0, y = 0.0, iteration = 0;
+
+                    while (x * x + y * y <= 4 && iteration < maxIterations) {
+                        const x_temp = x * x - y * y + cx;
+                        y = 2 * x * y + cy;
+                        x = x_temp;
+                        iteration++;
+                    }
+                    
+                    const color = getColor(iteration, maxIterations);
+                    const index = (py * width + px) * 4;
+                    data[index] = color.r;
+                    data[index + 1] = color.g;
+                    data[index + 2] = color.b;
+                    data[index + 3] = 255;
+                }
+            }
+            
+            ctx.putImageData(imageData, 0, 0);
+            const bitmap = offscreenCanvas.transferToImageBitmap();
+            self.postMessage({ bitmap: bitmap }, [bitmap]);
+        };
+    </script>
+
+    <script>
+        // --- CÓDIGO DEL HILO PRINCIPAL ---
+        const canvas = document.getElementById('fractalCanvas');
+        const ctx = canvas.getContext('2d');
+        const renderIndicator = document.getElementById('render-indicator');
+
+        // --- PARÁMETROS DE CONFIGURACIÓN ---
+        let MAX_ITERATIONS = 150;
+        const ZOOM_FACTOR = 1.4;
+
+        // --- ESTADO DE LA VISTA ---
+        let view = { centerX: -0.7, centerY: 0, zoom: 1, width: 0, height: 0 };
+        let renderTimeout;
+
+        // --- INICIALIZACIÓN DEL WEB WORKER ---
+        const workerCode = document.getElementById('fractal-worker').textContent;
+        const blob = new Blob([workerCode], { type: 'application/javascript' });
+        const worker = new Worker(URL.createObjectURL(blob));
+
+        worker.onmessage = (e) => {
+            const { bitmap } = e.data;
+            ctx.drawImage(bitmap, 0, 0);
+            renderIndicator.classList.remove('visible');
+            canvas.classList.remove('rendering');
+        };
+
+        function requestRender() {
+            clearTimeout(renderTimeout);
+            renderIndicator.classList.add('visible');
+            canvas.classList.add('rendering');
+            // Espera un poco antes de enviar la solicitud para no sobrecargar al worker si el usuario hace scroll rápido
+            renderTimeout = setTimeout(() => {
+                worker.postMessage({ view: view, maxIterations: MAX_ITERATIONS });
+            }, 100); // 100ms de debounce
+        }
+
+        function resizeAndDraw() {
+            view.width = window.innerWidth;
+            view.height = window.innerHeight;
+            canvas.width = view.width;
+            canvas.height = view.height;
+            requestRender();
+        }
+
+        // --- MANEJO DE EVENTOS ---
+        canvas.addEventListener('wheel', (event) => {
+            event.preventDefault();
+            const mouseX = event.clientX;
+            const mouseY = event.clientY;
+            const scaleBefore = 2.5 / (view.zoom * Math.min(view.width, view.height));
+            const complexXBefore = view.centerX + (mouseX - view.width / 2) * scaleBefore;
+            const complexYBefore = view.centerY + (mouseY - view.height / 2) * scaleBefore;
+
+            if (event.deltaY < 0) {
+                view.zoom *= ZOOM_FACTOR;
+                MAX_ITERATIONS = Math.floor(MAX_ITERATIONS * 1.08);
+            } else {
+                view.zoom /= ZOOM_FACTOR;
+                MAX_ITERATIONS = Math.max(150, Math.floor(MAX_ITERATIONS / 1.08));
+            }
+            
+            const scaleAfter = 2.5 / (view.zoom * Math.min(view.width, view.height));
+            const complexXAfter = view.centerX + (mouseX - view.width / 2) * scaleAfter;
+            const complexYAfter = view.centerY + (mouseY - view.height / 2) * scaleAfter;
+
+            view.centerX += complexXBefore - complexXAfter;
+            view.centerY += complexYBefore - complexYAfter;
+            
+            requestRender();
+        });
+
+        window.addEventListener('resize', resizeAndDraw);
+        
+        // --- LÓGICA DE LA API DE GEMINI (sin cambios) ---
+        const modal = document.getElementById('gemini-modal');
+        const modalTitle = document.getElementById('gemini-title');
+        const modalContent = document.getElementById('gemini-content');
+        const closeModalBtn = document.getElementById('close-modal-btn');
+        const suggestLocationBtn = document.getElementById('suggest-location-btn');
+        const describeViewBtn = document.getElementById('describe-view-btn');
+
+        const API_KEY = "";
+        const API_URL_TEXT = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${API_KEY}`;
+        
+        async function callGeminiAPI(payload, retries = 3, delay = 1000) {
+            try {
+                const response = await fetch(API_URL_TEXT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                return await response.json();
+            } catch (error) {
+                if (retries > 0) {
+                    await new Promise(res => setTimeout(res, delay));
+                    return callGeminiAPI(payload, retries - 1, delay * 2);
+                }
+                return null;
+            }
+        }
+
+        function showLoading() {
+            modalTitle.textContent = "Pensando...";
+            modalContent.innerHTML = '<div class="loader"></div>';
+            modal.classList.add('visible');
+        }
+
+        closeModalBtn.addEventListener('click', () => modal.classList.remove('visible'));
+
+        describeViewBtn.addEventListener('click', async () => {
+            showLoading();
+            const prompt = `Describe esta vista del fractal de Mandelbrot de una manera artística y poética. Está centrada en las coordenadas (${view.centerX.toFixed(4)}, ${view.centerY.toFixed(4)}) con un nivel de zoom de ${view.zoom.toExponential(2)}.`;
+            const payload = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
+            const result = await callGeminiAPI(payload);
+            modalTitle.textContent = "Descripción Artística";
+            if (result && result.candidates) {
+                modalContent.innerHTML = `<p>${result.candidates[0].content.parts[0].text.replace(/\n/g, '<br>')}</p>`;
+            } else {
+                modalContent.textContent = "No se pudo generar una descripción. Por favor, inténtalo de nuevo.";
+            }
+        });
+
+        suggestLocationBtn.addEventListener('click', async () => {
+            showLoading();
+            const prompt = "Sugiere 3 lugares famosos o visualmente interesantes para explorar en el conjunto de Mandelbrot. Proporciona un nombre, una breve descripción, y las coordenadas centerX, centerY y el nivel de zoom.";
+            const schema = { type: "ARRAY", items: { type: "OBJECT", properties: { name: { type: "STRING" }, description: { type: "STRING" }, centerX: { type: "NUMBER" }, centerY: { type: "NUMBER" }, zoom: { type: "NUMBER" } }, required: ["name", "description", "centerX", "centerY", "zoom"] } };
+            const payload = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", responseSchema: schema } };
+            const result = await callGeminiAPI(payload);
+            modalTitle.textContent = "Lugares Interesantes";
+            if (result && result.candidates) {
+                const locations = JSON.parse(result.candidates[0].content.parts[0].text);
+                modalContent.innerHTML = '';
+                locations.forEach(loc => {
+                    const div = document.createElement('div');
+                    div.className = 'location-suggestion';
+                    div.innerHTML = `<h3>${loc.name}</h3><p>${loc.description}</p>`;
+                    div.onclick = () => {
+                        view.centerX = loc.centerX;
+                        view.centerY = loc.centerY;
+                        view.zoom = loc.zoom;
+                        MAX_ITERATIONS = 150 * Math.log10(loc.zoom + 10);
+                        modal.classList.remove('visible');
+                        requestRender();
+                    };
+                    modalContent.appendChild(div);
+                });
+            } else {
+                modalContent.textContent = "No se pudieron obtener sugerencias. Por favor, inténtalo de nuevo.";
+            }
+        });
+        
+        // --- DIBUJADO INICIAL ---
+        resizeAndDraw();
+    </script>
+
+</body>
+</html>
